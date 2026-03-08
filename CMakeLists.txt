@@ -73,3 +73,6 @@ target_link_libraries(gravity_comp PRIVATE openarm_teleop_lib)
 target_link_libraries(comm_test PRIVATE openarm_teleop_lib)
 target_link_libraries(unilateral_control PRIVATE openarm_teleop_lib)
 target_link_libraries(bilateral_control PRIVATE openarm_teleop_lib)
+
+add_executable(can_socket_test control/can_socket_test.cpp)
+target_link_libraries(can_socket_test PRIVATE openarm_teleop_lib)

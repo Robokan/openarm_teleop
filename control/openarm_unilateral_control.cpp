@@ -114,27 +114,30 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
+        static int debug_counter = 0;
         auto now = std::chrono::steady_clock::now();
 
-        // get response
         auto leader_arm_resp = leader_state_->arm_state().get_all_responses();
         auto follower_arm_resp = follower_state_->arm_state().get_all_responses();
 
         auto leader_hand_resp = leader_state_->hand_state().get_all_responses();
         auto follower_hand_resp = follower_state_->hand_state().get_all_responses();
 
-        // set referense
         leader_state_->arm_state().set_all_references(follower_arm_resp);
         leader_state_->hand_state().set_all_references(follower_hand_resp);
 
         follower_state_->arm_state().set_all_references(leader_arm_resp);
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
-        auto elapsed_us =
-            std::chrono::duration_cast<std::chrono::microseconds>(now - prev_time).count();
-        prev_time = now;
+        if (++debug_counter % 100 == 0) {
+            std::cout << "[Admin] Leader pos:";
+            for (const auto& s : leader_arm_resp) std::cout << " " << s.position;
+            std::cout << "\n[Admin] Follower ref:";
+            for (const auto& s : leader_arm_resp) std::cout << " " << s.position;
+            std::cout << std::endl;
+        }
 
-        // std::cout << "[Admin] Period: " << elapsed_us << " us" << std::endl;
+        prev_time = now;
     }
 
 private:
@@ -272,11 +275,7 @@ int main(int argc, char **argv) {
         control_follower->SetParameter(follower_kp, follower_kd, follower_Fc, follower_k,
                                        follower_Fv, follower_Fo);
 
-        // set home postion
-        std::thread thread_l(&Control::AdjustPosition, control_leader);
-        std::thread thread_f(&Control::AdjustPosition, control_follower);
-        thread_l.join();
-        thread_f.join();
+        // Skip AdjustPosition - start from current arm positions (like Anvil code)
 
         // Start control process
         LeaderArmThread leader_thread(leader_state, control_leader, FREQUENCY);

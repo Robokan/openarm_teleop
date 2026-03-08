@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
 
         std::cout << "=== Initializing Leader OpenArm ===" << std::endl;
         openarm::can::socket::OpenArm* openarm =
-            openarm_init::OpenArmInitializer::initialize_openarm(can_interface, true);
+            openarm_init::OpenArmInitializer::initialize_openarm(can_interface, true, false);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         auto start_time = std::chrono::high_resolution_clock::now();
@@ -93,20 +93,30 @@ int main(int argc, char** argv) {
 
         std::vector<double> grav_torques(openarm->get_arm().get_motors().size(), 0.0);
 
+        const auto loop_period = std::chrono::microseconds(10000);  // 100 Hz
+
         while (keep_running) {
+            auto next_tick = std::chrono::steady_clock::now() + loop_period;
             frame_count++;
             auto current_time = std::chrono::high_resolution_clock::now();
 
-            // Calculate and display Hz every second
             auto time_since_last_display = std::chrono::duration_cast<std::chrono::milliseconds>(
                                                current_time - last_hz_display)
                                                .count();
-            if (time_since_last_display >= 1000) {  // Every 1000ms (1 second)
+            if (time_since_last_display >= 1000) {
                 auto total_time =
                     std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time)
                         .count();
                 double hz = (frame_count * 1000.0) / total_time;
                 std::cout << "=== Loop Frequency: " << hz << " Hz ===" << std::endl;
+                std::cout << "  Positions:";
+                for (size_t i = 0; i < arm_joint_positions.size(); ++i)
+                    std::cout << " " << arm_joint_positions[i];
+                std::cout << std::endl;
+                std::cout << "  Grav torques:";
+                for (size_t i = 0; i < grav_torques.size(); ++i)
+                    std::cout << " " << grav_torques[i];
+                std::cout << std::endl;
                 last_hz_display = current_time;
             }
 
@@ -118,19 +128,18 @@ int main(int argc, char** argv) {
 
             arm_dynamics.GetGravity(arm_joint_positions.data(), grav_torques.data());
 
-            for (size_t i = 0; i < openarm->get_arm().get_motors().size(); ++i) {
-                // std::cout << "grav_torques[" << i << "] = " << grav_torques[i] << std::endl;
-            }
-
             std::vector<openarm::damiao_motor::MITParam> cmds;
             cmds.reserve(grav_torques.size());
 
             std::transform(grav_torques.begin(), grav_torques.end(), std::back_inserter(cmds),
-                           [](double t) { return openarm::damiao_motor::MITParam{0, 0, 0, 0, t}; });
+                           [](double t) {
+                               return openarm::damiao_motor::MITParam{0, 0, 0, 0, t};
+                           });
 
             openarm->get_arm().mit_control_all(cmds);
-
-            openarm->recv_all();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            openarm->recv_all(10000);
+            std::this_thread::sleep_until(next_tick);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));

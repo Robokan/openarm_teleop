@@ -26,15 +26,21 @@ int main(int argc, char** argv) {
         std::cout << "This example demonstrates the OpenArm API functionality" << std::endl;
 
         std::string can_interface = "can0";
-        if (argc > 1) {
-            can_interface = argv[1];
+        bool enable_fd = false;
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--fd") {
+                enable_fd = true;
+            } else {
+                can_interface = arg;
+            }
         }
 
-        std::cout << "[INFO] Using CAN interface: " << can_interface << std::endl;
+        std::cout << "[INFO] Using CAN interface: " << can_interface
+                  << " (FD: " << (enable_fd ? "yes" : "no") << ")" << std::endl;
 
-        // Initialize OpenArm with CAN interface and enable CAN-FD
         std::cout << "Initializing OpenArm CAN..." << std::endl;
-        openarm::can::socket::OpenArm openarm(can_interface, true);  // Use CAN-FD on can0 interface
+        openarm::can::socket::OpenArm openarm(can_interface, enable_fd);
 
         // Initialize arm motors
         std::vector<openarm::damiao_motor::MotorType> motor_types = {
@@ -54,13 +60,13 @@ int main(int argc, char** argv) {
         // Set callback mode to ignore and refresh all motors
         openarm.set_callback_mode_all(openarm::damiao_motor::CallbackMode::IGNORE);
         openarm.refresh_all();
-        openarm.recv_all();
+        openarm.recv_all(10000);
 
         // Enable all motors
         std::cout << "\n=== Enabling Motors ===" << std::endl;
         openarm.enable_all();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        openarm.recv_all();
+        openarm.recv_all(10000);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         // Set device mode to param and query motor id
@@ -69,7 +75,7 @@ int main(int argc, char** argv) {
         openarm.query_param_all(static_cast<int>(openarm::damiao_motor::RID::MST_ID));
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        openarm.recv_all();
+        openarm.recv_all(10000);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         // Access motors through components
@@ -99,7 +105,7 @@ int main(int argc, char** argv) {
 
         openarm.get_gripper().mit_control_all({openarm::damiao_motor::MITParam{0, 0, 0, 0, 0}});
 
-        openarm.recv_all();
+        openarm.recv_all(10000);
 
         // Control gripper
         std::cout << "Opening gripper..." << std::endl;
@@ -107,7 +113,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         for (int i = 0; i < 100; i++) {
             openarm.refresh_all();
-            openarm.recv_all();
+            openarm.recv_all(10000);
 
             // Display arm motor states
             for (const auto& motor : openarm.get_arm().get_motors()) {
@@ -128,7 +134,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
         openarm.disable_all();
-        openarm.recv_all();
+        openarm.recv_all(10000);
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

@@ -39,7 +39,7 @@ constexpr double PI = 3.14159265358979323846;
 
 #define TANHFRIC true
 
-#define FREQUENCY 1000.0
+#define FREQUENCY 100.0
 #define CUTOFF_FREQUENCY 90.0
 
 #define ELBOWLIMIT 0.0

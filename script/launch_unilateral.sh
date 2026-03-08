@@ -49,32 +49,17 @@ fi
 LEADER_URDF_PATH="$TMPDIR/${ARM_TYPE}_leader.urdf"
 FOLLOWER_URDF_PATH="$TMPDIR/${ARM_TYPE}_follower.urdf"
 XACRO_FILE="$ARM_TYPE.urdf.xacro"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
 WS_DIR=~/openarm_ros2_ws
 XACRO_PATH="$WS_DIR/src/openarm_description/urdf/robot/$XACRO_FILE"
-BIN_PATH=~/openarm_teleop/build/unilateral_control
+BIN_PATH="$REPO_DIR/build/unilateral_control"
 
-# Check workspace
-if [ ! -d "$WS_DIR" ]; then
-    echo "[ERROR] Could not find workspace at: $WS_DIR" >&2
-    echo "We assume the default ROS 2 workspace is ~/openarm_ros2_ws." >&2
-    echo "If you are using a different workspace, please update WS_DIR in this launch script." >&2
-    exit 1
-fi
-
-# Check openarm_description package
-if [ ! -d "$WS_DIR/src/openarm_description" ]; then
-    echo "[ERROR] Could not find package: $WS_DIR/src/openarm_description" >&2
-    echo "Please make sure to clone openarm_description into $WS_DIR/src/" >&2
-    exit 1
-fi
-
-# Check xacro
+# Check openarm_description xacro
 if [ ! -f "$XACRO_PATH" ]; then
-    echo "[ERROR] Could not find ${XACRO_FILE} under $WS_DIR/src/openarm_description/urdf/robot/" >&2
+    echo "[ERROR] Could not find ${XACRO_FILE} at $XACRO_PATH" >&2
     exit 1
 fi
-
-# ================================
 
 # Check binary
 if [ ! -f "$BIN_PATH" ]; then
@@ -82,14 +67,18 @@ if [ ! -f "$BIN_PATH" ]; then
     exit 1
 fi
 
-# Source ROS 2
-# shellcheck source=/dev/null
-source "$WS_DIR/install/setup.bash"
+# Use local ament_index and xacro (no ROS 2 required)
+export AMENT_PREFIX_PATH="${AMENT_PREFIX_PATH:-$HOME/.local}"
+XACRO_BIN="${XACRO_BIN:-$(command -v xacro)}"
+if [ -z "$XACRO_BIN" ]; then
+    echo "[ERROR] xacro not found. Install with: pip install xacro" >&2
+    exit 1
+fi
 
 # Generate URDFs
 echo "[INFO] Generating URDFs using xacro..."
 mkdir -p "$TMPDIR"
-if ! xacro "$XACRO_PATH" bimanual:=true -o "$LEADER_URDF_PATH"; then
+if ! "$XACRO_BIN" "$XACRO_PATH" bimanual:=true -o "$LEADER_URDF_PATH"; then
     echo "[ERROR] Failed to generate URDFs."
     exit 1
 fi

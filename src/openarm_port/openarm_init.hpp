@@ -26,25 +26,14 @@ namespace openarm_init {
 
 class OpenArmInitializer {
 public:
-    /**
-     * @brief Initialize OpenArm with default configuration
-     * @param can_device CAN device name (e.g., "can0", "can1")
-     * @param enable_debug Enable debug output
-     * @return Initialized OpenArm pointer (caller owns memory)
-     */
     static openarm::can::socket::OpenArm *initialize_openarm(const std::string &can_device,
-                                                             bool enable_debug = true);
+                                                             bool enable_debug = true,
+                                                             bool enable_fd = false);
 
-    /**
-     * @brief Initialize OpenArm with custom motor configuration
-     * @param can_device CAN device name
-     * @param config Custom motor configuration
-     * @param enable_debug Enable debug output
-     * @return Initialized OpenArm pointer (caller owns memory)
-     */
     static openarm::can::socket::OpenArm *initialize_openarm(const std::string &can_device,
                                                              const MotorConfig &config,
-                                                             bool enable_debug = true);
+                                                             bool enable_debug = true,
+                                                             bool enable_fd = false);
 
 private:
     /**
