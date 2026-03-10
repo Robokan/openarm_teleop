@@ -1,0 +1,15 @@
+# Persistent CAN interface naming for OpenArm CANable 2.0 adapters.
+# Install: sudo cp 99-openarm-can.rules /etc/udev/rules.d/
+# Reload: sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Leader Left Arm
+SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="001B00523630501120353355", NAME="can0"
+
+# Leader Right Arm
+SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="004500533630501120353355", NAME="can1"
+
+# Follower Right Arm
+SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="003100553630501120353355", NAME="can2"
+
+# Follower Left Arm
+SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="004900303945501620303651", NAME="can3"

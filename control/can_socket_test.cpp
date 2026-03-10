@@ -63,6 +63,7 @@ int main() {
     std::cout << "\n=== Test 2: Library OpenArm recv_all ===" << std::endl;
 
     auto* openarm = openarm_init::OpenArmInitializer::initialize_openarm(can_iface, true, false);
+    openarm->set_recv_debug(true);
 
     auto motors_init = openarm->get_arm().get_motors();
     std::cout << "After init, motor0 pos = " << motors_init[0].get_position() << std::endl;

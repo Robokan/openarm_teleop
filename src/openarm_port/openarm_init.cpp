@@ -59,6 +59,14 @@ void OpenArmInitializer::initialize_(openarm::can::socket::OpenArm *openarm,
     // Set callback mode for all motors
     openarm->set_callback_mode_all(openarm::damiao_motor::CallbackMode::STATE);
 
+    // Ensure motors are in MIT control mode (must be set before enable)
+    openarm->get_arm().set_control_mode_all(openarm::damiao_motor::ControlMode::MIT);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    openarm->recv_all(5000);
+    openarm->get_gripper().set_control_mode_all(openarm::damiao_motor::ControlMode::MIT);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    openarm->recv_all(5000);
+
     if (enable_debug) {
         std::cout << "Enabling motors..." << std::endl;
     }
