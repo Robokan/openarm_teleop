@@ -144,6 +144,10 @@ protected:
         leader_state_->hand_state().set_all_references(follower_hand_resp);
 
         follower_state_->arm_state().set_all_references(leader_arm_resp);
+
+        // Scale gripper range for follower (leader gripper has smaller travel)
+        constexpr double gripper_scale = 2.58;
+        for (auto& s : leader_hand_resp) s.position *= gripper_scale;
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
         static int debug_counter = 0;
