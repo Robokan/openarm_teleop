@@ -399,19 +399,11 @@ bool Control::AdjustPosition(void) {
     std::vector<JointState> joint_hand_now =
         openarmgripperjointconverter_->motor_to_joint(gripper_motor_states);
 
-    std::vector<JointState> joint_arm_goal(NMOTORS - 1);
-    for (size_t i = 0; i < NMOTORS - 1; ++i) {
-        joint_arm_goal[i].position = INITIAL_POSITION[i];
-        joint_arm_goal[i].velocity = 0.0;
-        joint_arm_goal[i].effort = 0.0;
-    }
-
-    std::vector<JointState> joint_hand_goal(joint_hand_now.size());
-    for (size_t i = 0; i < joint_hand_goal.size(); ++i) {
-        joint_hand_goal[i].position = 0.0;
-        joint_hand_goal[i].velocity = 0.0;
-        joint_hand_goal[i].effort = 0.0;
-    }
+    // Use references from robot_state as the target position, so callers
+    // can set a custom goal (e.g. leader's current position) before calling.
+    // If no references have been set, defaults to zero (close to home).
+    std::vector<JointState> joint_arm_goal = robot_state_->arm_state().get_all_references();
+    std::vector<JointState> joint_hand_goal = robot_state_->hand_state().get_all_references();
 
     std::vector<double> kp_arm_temp = {50, 50.0, 50.0, 50.0, 10.0, 10.0, 10.0};
     std::vector<double> kd_arm_temp = {1.2, 1.2, 1.2, 1.2, 0.3, 0.2, 0.3};

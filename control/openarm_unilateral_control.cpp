@@ -308,8 +308,31 @@ int main(int argc, char **argv) {
         control_follower->SetParameter(follower_kp, follower_kd, follower_Fc, follower_k,
                                        follower_Fv, follower_Fo);
 
-        // Skip AdjustPosition — leader floats from current position,
-        // follower will track leader's position once AdminThread starts
+        // Read leader's current position so follower can smoothly move to it
+        leader_openarm->refresh_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        leader_openarm->recv_all(10000);
+
+        OpenArmJointConverter arm_conv(leader_arm_motor_num);
+        OpenArmJGripperJointConverter grip_conv(leader_hand_motor_num);
+
+        std::vector<MotorState> leader_arm_ms;
+        for (const auto& m : leader_openarm->get_arm().get_motors())
+            leader_arm_ms.push_back({m.get_position(), m.get_velocity(), 0.0});
+        std::vector<MotorState> leader_grip_ms;
+        for (const auto& m : leader_openarm->get_gripper().get_motors())
+            leader_grip_ms.push_back({m.get_position(), m.get_velocity(), 0.0});
+
+        auto leader_arm_joints = arm_conv.motor_to_joint(leader_arm_ms);
+        auto leader_grip_joints = grip_conv.motor_to_joint(leader_grip_ms);
+
+        // Set follower's target to leader's current position
+        follower_state->arm_state().set_all_references(leader_arm_joints);
+        follower_state->hand_state().set_all_references(leader_grip_joints);
+
+        // Smoothly move follower to leader's position
+        std::thread thread_f(&Control::AdjustPosition, control_follower);
+        thread_f.join();
 
         // Start control process
         LeaderArmThread leader_thread(leader_state, control_leader, FREQUENCY);
