@@ -332,10 +332,21 @@ bool Control::unilateral_step() {
     }
 
     else if (role_ == ROLE_FOLLOWER) {
+        // Compute gravity comp for follower so Kp doesn't have to fight gravity alone
+        dynamics_f_->GetGravity(joint_arm_positions.data(), gravity.data());
+
+        for (size_t i = 0; i < joint_arm_velocities.size(); ++i)
+            ComputeFriction(joint_arm_velocities.data(), friction.data(), i);
+
+        const double grav_scale_f[] = {0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.75};
+
         std::vector<JointState> joint_arm_states_ref =
             robot_state_->arm_state().get_all_references();
         std::vector<JointState> joint_hand_states_ref =
             robot_state_->hand_state().get_all_references();
+
+        for (size_t i = 0; i < arm_dof; ++i)
+            joint_arm_states_ref[i].effort = gravity[i] * grav_scale_f[i] + friction[i];
 
         std::vector<MotorState> arm_motor_refs =
             openarmjointconverter_->joint_to_motor(joint_arm_states_ref);
@@ -346,7 +357,8 @@ bool Control::unilateral_step() {
         arm_cmds.reserve(arm_motor_refs.size());
         for (size_t i = 0; i < arm_motor_refs.size(); ++i) {
             arm_cmds.emplace_back(openarm::damiao_motor::MITParam{
-                Kp_[i], Kd_[i], arm_motor_refs[i].position, arm_motor_refs[i].velocity, 0.0});
+                Kp_[i], Kd_[i], arm_motor_refs[i].position, arm_motor_refs[i].velocity,
+                arm_motor_refs[i].effort});
         }
 
         std::vector<openarm::damiao_motor::MITParam> hand_cmds;

@@ -156,6 +156,12 @@ int main(int argc, char** argv) {
             openarm->get_arm().mit_control_all(cmds);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             openarm->recv_all(10000);
+            if (time_since_last_display >= 1000) {
+                std::cout << "  Motor pos:";
+                for (size_t j = 0; j < motors.size(); ++j)
+                    std::cout << " [" << j << "]=" << motors[j].get_position();
+                std::cout << std::endl;
+            }
             std::this_thread::sleep_until(next_tick);
         }
 
