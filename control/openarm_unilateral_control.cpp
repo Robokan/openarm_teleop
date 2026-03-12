@@ -145,9 +145,10 @@ protected:
 
         follower_state_->arm_state().set_all_references(leader_arm_resp);
 
-        // Scale gripper range for follower (leader gripper has smaller travel)
+        // Offset + scale leader gripper to follower range
         constexpr double gripper_scale = 2.58;
-        for (auto& s : leader_hand_resp) s.position *= gripper_scale;
+        constexpr double gripper_offset = 0.06;
+        for (auto& s : leader_hand_resp) s.position = (s.position + gripper_offset) * gripper_scale;
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
         static int debug_counter = 0;
@@ -326,7 +327,11 @@ int main(int argc, char **argv) {
         auto leader_arm_joints = arm_conv.motor_to_joint(leader_arm_ms);
         auto leader_grip_joints = grip_conv.motor_to_joint(leader_grip_ms);
 
-        // Set follower's target to leader's current position
+        // Offset + scale leader gripper to follower range for startup
+        constexpr double gripper_scale_startup = 2.58;
+        constexpr double gripper_offset_startup = 0.06;
+        for (auto& s : leader_grip_joints) s.position = (s.position + gripper_offset_startup) * gripper_scale_startup;
+
         follower_state->arm_state().set_all_references(leader_arm_joints);
         follower_state->hand_state().set_all_references(leader_grip_joints);
 

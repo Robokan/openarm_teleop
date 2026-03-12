@@ -63,8 +63,11 @@ protected:
         if (tick < 5 || tick % 500 == 0) {
             auto resp = robot_state_->arm_state().get_all_responses();
             auto ref = robot_state_->arm_state().get_all_references();
+            auto grip = robot_state_->hand_state().get_all_responses();
             std::cout << "[Leader t=" << tick << " " << elapsed_us << "us] resp:";
             for (auto& s : resp) std::cout << " " << s.position;
+            std::cout << "  grip:";
+            for (auto& s : grip) std::cout << " " << s.position;
             std::cout << "  ref:";
             for (auto& s : ref) std::cout << " " << s.position;
             std::cout << std::endl;
@@ -103,8 +106,11 @@ protected:
         if (tick < 5 || tick % 500 == 0) {
             auto resp = robot_state_->arm_state().get_all_responses();
             auto ref = robot_state_->arm_state().get_all_references();
+            auto grip = robot_state_->hand_state().get_all_responses();
             std::cout << "[Follower t=" << tick << " " << elapsed_us << "us] resp:";
             for (auto& s : resp) std::cout << " " << s.position;
+            std::cout << "  grip:";
+            for (auto& s : grip) std::cout << " " << s.position;
             std::cout << "  ref:";
             for (auto& s : ref) std::cout << " " << s.position;
             std::cout << std::endl;
@@ -153,16 +159,25 @@ protected:
             std::cout << std::endl;
         }
 
-        constexpr double gripper_scale = 2.58;
+        // Gentle push away from full elbow extension (within 20 deg of straight)
+        constexpr double elbow_zone = 0.349;
+        constexpr double elbow_blend = 1.05;
+        for (auto* resp : {&leader_arm_resp, &follower_arm_resp}) {
+            if ((*resp)[3].position < elbow_zone)
+                (*resp)[3].position += (elbow_zone - (*resp)[3].position) * elbow_blend;
+        }
 
-        // Leader ← follower: scale follower gripper down to leader's range
+        constexpr double gripper_scale = 2.58;
+        constexpr double gripper_offset = 0.06;
+
+        // Leader ← follower: undo offset+scale from follower back to leader range
         leader_state_->arm_state().set_all_references(follower_arm_resp);
-        for (auto& s : follower_hand_resp) s.position /= gripper_scale;
+        for (auto& s : follower_hand_resp) s.position = s.position / gripper_scale - gripper_offset;
         leader_state_->hand_state().set_all_references(follower_hand_resp);
 
-        // Follower ← leader: scale leader gripper up to follower's range
+        // Follower ← leader: offset so closed=0, then scale up to follower range
         follower_state_->arm_state().set_all_references(leader_arm_resp);
-        for (auto& s : leader_hand_resp) s.position *= gripper_scale;
+        for (auto& s : leader_hand_resp) s.position = (s.position + gripper_offset) * gripper_scale;
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
         auto elapsed_us =
@@ -346,9 +361,10 @@ int main(int argc, char **argv) {
         auto leader_arm_joints = arm_conv.motor_to_joint(leader_arm_ms);
         auto leader_grip_joints = grip_conv.motor_to_joint(leader_grip_ms);
 
-        // Scale leader gripper to follower range before setting startup target
+        // Offset + scale leader gripper to follower range before setting startup target
         constexpr double gripper_scale_startup = 2.58;
-        for (auto& s : leader_grip_joints) s.position *= gripper_scale_startup;
+        constexpr double gripper_offset_startup = 0.06;
+        for (auto& s : leader_grip_joints) s.position = (s.position + gripper_offset_startup) * gripper_scale_startup;
 
         follower_state->arm_state().set_all_references(leader_arm_joints);
         follower_state->hand_state().set_all_references(leader_grip_joints);

@@ -169,12 +169,19 @@ bool Control::bilateral_step() {
         ComputeFriction(joint_gripper_velocities.data(), friction.data(),
                         joint_arm_velocities.size() + i);
 
-    // Per-joint gravity scale — tuned for bilateral (wrist needs more than unilateral's 0.5)
     const double grav_scale[] = {0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.75};
-    for (size_t i = 0; i < arm_dof; i++) {
-        joint_arm_states_ref[i].effort = gravity[i] * grav_scale[i] + friction[i];
+    if (role_ == ROLE_LEADER) {
+        // Leader uses unilateral-style gravity comp for free-floating feel,
+        // while Kp provides gentle force feedback from follower
+        for (size_t i = 0; i < arm_dof; i++) {
+            joint_arm_states_ref[i].effort =
+                gravity[i] * grav_scale[i] + friction[i] * 0.3 + coriolis[i] * 0.1;
+        }
+    } else {
+        for (size_t i = 0; i < arm_dof; i++) {
+            joint_arm_states_ref[i].effort = gravity[i] * grav_scale[i] + friction[i];
+        }
     }
-
     for (size_t i = 0; i < gripper_dof; i++) {
         joint_gripper_states_ref[i].effort = friction[i + arm_dof];
     }
