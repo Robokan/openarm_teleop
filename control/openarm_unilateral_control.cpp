@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <atomic>
+#include <can_interface_resolver.hpp>
 #include <chrono>
 #include <controller/control.hpp>
 #include <controller/dynamics.hpp>
@@ -49,16 +50,22 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
+        static int tick = 0;
 
         control_l_->unilateral_step();
 
         auto now = std::chrono::steady_clock::now();
-
         auto elapsed_us =
             std::chrono::duration_cast<std::chrono::microseconds>(now - prev_time).count();
         prev_time = now;
 
-        // std::cout << "[Leader] Period: " << elapsed_us << " us" << std::endl;
+        if (tick < 3 || tick % 500 == 0) {
+            auto resp = robot_state_->arm_state().get_all_responses();
+            std::cout << "[Leader t=" << tick << " " << elapsed_us << "us] resp:";
+            for (auto& s : resp) std::cout << " " << s.position;
+            std::cout << std::endl;
+        }
+        tick++;
     }
 
 private:
@@ -79,16 +86,25 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
+        static int tick = 0;
 
         control_f_->unilateral_step();
 
         auto now = std::chrono::steady_clock::now();
-
         auto elapsed_us =
             std::chrono::duration_cast<std::chrono::microseconds>(now - prev_time).count();
         prev_time = now;
 
-        // std::cout << "[Follower] Period: " << elapsed_us << " us" << std::endl;
+        if (tick < 3 || tick % 500 == 0) {
+            auto ref = robot_state_->arm_state().get_all_references();
+            auto resp = robot_state_->arm_state().get_all_responses();
+            std::cout << "[Follower t=" << tick << " " << elapsed_us << "us] ref:";
+            for (auto& s : ref) std::cout << " " << s.position;
+            std::cout << "  resp:";
+            for (auto& s : resp) std::cout << " " << s.position;
+            std::cout << std::endl;
+        }
+        tick++;
     }
 
 private:
@@ -114,29 +130,32 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
-        static int debug_counter = 0;
         auto now = std::chrono::steady_clock::now();
 
+        // get response
         auto leader_arm_resp = leader_state_->arm_state().get_all_responses();
         auto follower_arm_resp = follower_state_->arm_state().get_all_responses();
 
         auto leader_hand_resp = leader_state_->hand_state().get_all_responses();
         auto follower_hand_resp = follower_state_->hand_state().get_all_responses();
 
+        // set referense
         leader_state_->arm_state().set_all_references(follower_arm_resp);
         leader_state_->hand_state().set_all_references(follower_hand_resp);
 
         follower_state_->arm_state().set_all_references(leader_arm_resp);
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
-        if (++debug_counter % 100 == 0) {
-            std::cout << "[Admin] Leader pos:";
+        static int debug_counter = 0;
+        if (++debug_counter % 500 == 0) {
+            std::cout << "[Admin] Leader resp:";
             for (const auto& s : leader_arm_resp) std::cout << " " << s.position;
-            std::cout << "\n[Admin] Follower ref:";
+            std::cout << "\n[Admin] Follower resp:";
+            for (const auto& s : follower_arm_resp) std::cout << " " << s.position;
+            std::cout << "\n[Admin] Follower ref (=leader):";
             for (const auto& s : leader_arm_resp) std::cout << " " << s.position;
             std::cout << std::endl;
         }
-
         prev_time = now;
     }
 
@@ -155,8 +174,8 @@ int main(int argc, char **argv) {
         std::string arm_side = "right_arm";
         std::string leader_urdf_path;
         std::string follower_urdf_path;
-        std::string leader_can_interface = "can0";
-        std::string follower_can_interface = "can2";
+        std::string leader_can_interface;
+        std::string follower_can_interface;
 
         if (argc < 3) {
             std::cerr
@@ -180,10 +199,20 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Optional: CAN interfaces
         if (argc >= 6) {
             leader_can_interface = argv[4];
             follower_can_interface = argv[5];
+        } else {
+            openarm::print_interface_map();
+            std::string side = (arm_side == "left_arm") ? "left" : "right";
+            leader_can_interface = openarm::resolve_arm_interface("leader_" + side);
+            follower_can_interface = openarm::resolve_arm_interface("follower_" + side);
+            if (leader_can_interface.empty() || follower_can_interface.empty()) {
+                std::cerr << "[ERROR] Could not auto-resolve CAN interfaces!" << std::endl;
+                return 1;
+            }
+            std::cout << "Auto-resolved leader  -> " << leader_can_interface << std::endl;
+            std::cout << "Auto-resolved follower -> " << follower_can_interface << std::endl;
         }
 
         // URDF file existence check
@@ -275,7 +304,8 @@ int main(int argc, char **argv) {
         control_follower->SetParameter(follower_kp, follower_kd, follower_Fc, follower_k,
                                        follower_Fv, follower_Fo);
 
-        // Skip AdjustPosition - start from current arm positions (like Anvil code)
+        // Skip AdjustPosition — leader floats from current position,
+        // follower will track leader's position once AdminThread starts
 
         // Start control process
         LeaderArmThread leader_thread(leader_state, control_leader, FREQUENCY);

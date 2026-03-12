@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <atomic>
+#include <can_interface_resolver.hpp>
 #include <chrono>
 #include <controller/dynamics.hpp>
 #include <csignal>
@@ -37,24 +38,40 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, signal_handler);
 
         std::string arm_side = "right_arm";
-        std::string can_interface = "can0";
+        std::string can_interface;
 
-        if (argc < 4) {
-            std::cerr << "Usage: " << argv[0] << " <arm_side> <can_interface> <urdf_path>"
+        if (argc < 3) {
+            std::cerr << "Usage: " << argv[0] << " <arm_side> <urdf_path> [can_interface]"
                       << std::endl;
-            std::cerr << "Example: " << argv[0] << " right_arm can0 /tmp/v10_bimanual.urdf"
+            std::cerr << "Example: " << argv[0] << " left_arm /tmp/v10_bimanual.urdf"
+                      << std::endl;
+            std::cerr << "\nCAN interface is auto-resolved from USB serial when not specified."
                       << std::endl;
             return 1;
         }
 
         arm_side = argv[1];
-        can_interface = argv[2];
-        std::string urdf_path = argv[3];
 
         if (arm_side != "left_arm" && arm_side != "right_arm") {
             std::cerr << "[ERROR] Invalid arm_side: " << arm_side
                       << ". Must be 'left_arm' or 'right_arm'." << std::endl;
             return 1;
+        }
+
+        std::string urdf_path = argv[2];
+
+        if (argc >= 4) {
+            can_interface = argv[3];
+        } else {
+            openarm::print_interface_map();
+            std::string side = (arm_side == "left_arm") ? "left" : "right";
+            can_interface = openarm::resolve_arm_interface("leader_" + side);
+            if (can_interface.empty()) {
+                std::cerr << "[ERROR] Could not find CAN adapter for leader_"
+                          << side << " by USB serial!" << std::endl;
+                return 1;
+            }
+            std::cout << "Auto-resolved leader -> " << can_interface << std::endl;
         }
 
         if (!std::filesystem::exists(urdf_path)) {

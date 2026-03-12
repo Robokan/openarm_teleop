@@ -29,6 +29,10 @@ openarm::can::socket::OpenArm *OpenArmInitializer::initialize_openarm(const std:
                                                                       const MotorConfig &config,
                                                                       bool enable_debug,
                                                                       bool enable_fd) {
+    // Original upstream passes enable_debug as the 2nd arg, but the OpenArm
+    // constructor's 2nd param is actually enable_fd. Passing true enabled CAN FD
+    // mode which doesn't work with CANable 2.0 (CAN 2.0 only). Fixed by adding
+    // an explicit enable_fd parameter (defaults to false).
     openarm::can::socket::OpenArm *openarm =
         new openarm::can::socket::OpenArm(can_device, enable_fd);
 
@@ -59,7 +63,8 @@ void OpenArmInitializer::initialize_(openarm::can::socket::OpenArm *openarm,
     // Set callback mode for all motors
     openarm->set_callback_mode_all(openarm::damiao_motor::CallbackMode::STATE);
 
-    // Ensure motors are in MIT control mode (must be set before enable)
+    // Explicitly set MIT control mode before enabling. Without this, motors
+    // may not accept MIT commands after enable on some firmware versions.
     openarm->get_arm().set_control_mode_all(openarm::damiao_motor::ControlMode::MIT);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     openarm->recv_all(5000);
@@ -71,14 +76,10 @@ void OpenArmInitializer::initialize_(openarm::can::socket::OpenArm *openarm,
         std::cout << "Enabling motors..." << std::endl;
     }
 
-    for (int i = 0; i < (int)openarm->get_arm().get_motors().size(); ++i) {
-        openarm->get_arm().enable_one(i);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        openarm->recv_all(5000);
-    }
-    openarm->get_gripper().enable_one(0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    openarm->recv_all(5000);
+    openarm->enable_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    openarm->recv_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // Print motor counts for verification
     if (enable_debug) {

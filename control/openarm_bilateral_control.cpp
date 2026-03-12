@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <atomic>
+#include <can_interface_resolver.hpp>
 #include <chrono>
 #include <controller/control.hpp>
 #include <controller/dynamics.hpp>
@@ -49,6 +50,7 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
+        static int tick = 0;
 
         control_l_->bilateral_step();
 
@@ -58,7 +60,16 @@ protected:
             std::chrono::duration_cast<std::chrono::microseconds>(now - prev_time).count();
         prev_time = now;
 
-        // std::cout << "[Leader] Period: " << elapsed_us << " us" << std::endl;
+        if (tick < 5 || tick % 500 == 0) {
+            auto resp = robot_state_->arm_state().get_all_responses();
+            auto ref = robot_state_->arm_state().get_all_references();
+            std::cout << "[Leader t=" << tick << " " << elapsed_us << "us] resp:";
+            for (auto& s : resp) std::cout << " " << s.position;
+            std::cout << "  ref:";
+            for (auto& s : ref) std::cout << " " << s.position;
+            std::cout << std::endl;
+        }
+        tick++;
     }
 
 private:
@@ -79,6 +90,7 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
+        static int tick = 0;
 
         control_f_->bilateral_step();
 
@@ -88,7 +100,16 @@ protected:
             std::chrono::duration_cast<std::chrono::microseconds>(now - prev_time).count();
         prev_time = now;
 
-        // std::cout << "[Follower] Period: " << elapsed_us << " us" << std::endl;
+        if (tick < 5 || tick % 500 == 0) {
+            auto resp = robot_state_->arm_state().get_all_responses();
+            auto ref = robot_state_->arm_state().get_all_references();
+            std::cout << "[Follower t=" << tick << " " << elapsed_us << "us] resp:";
+            for (auto& s : resp) std::cout << " " << s.position;
+            std::cout << "  ref:";
+            for (auto& s : ref) std::cout << " " << s.position;
+            std::cout << std::endl;
+        }
+        tick++;
     }
 
 private:
@@ -114,6 +135,7 @@ protected:
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
+        static int tick = 0;
         auto now = std::chrono::steady_clock::now();
 
         // get response
@@ -122,6 +144,14 @@ protected:
 
         auto leader_hand_resp = leader_state_->hand_state().get_all_responses();
         auto follower_hand_resp = follower_state_->hand_state().get_all_responses();
+
+        if (tick < 5) {
+            std::cout << "[Admin t=" << tick << "] leader_resp:";
+            for (auto& s : leader_arm_resp) std::cout << " " << s.position;
+            std::cout << "  follower_resp:";
+            for (auto& s : follower_arm_resp) std::cout << " " << s.position;
+            std::cout << std::endl;
+        }
 
         // set referense
         leader_state_->arm_state().set_all_references(follower_arm_resp);
@@ -134,7 +164,7 @@ protected:
             std::chrono::duration_cast<std::chrono::microseconds>(now - prev_time).count();
         prev_time = now;
 
-        // std::cout << "[Admin] Period: " << elapsed_us << " us" << std::endl;
+        tick++;
     }
 
 private:
@@ -151,14 +181,16 @@ int main(int argc, char **argv) {
         std::string arm_side = "right_arm";
         std::string leader_urdf_path;
         std::string follower_urdf_path;
-        std::string leader_can_interface = "can0";
-        std::string follower_can_interface = "can2";
+        std::string leader_can_interface;
+        std::string follower_can_interface;
 
         if (argc < 3) {
             std::cerr
                 << "Usage: " << argv[0]
                 << " <leader_urdf_path> <follower_urdf_path> [arm_side] [leader_can] [follower_can]"
                 << std::endl;
+            std::cerr << "\nCAN interfaces are auto-resolved from USB serial numbers "
+                         "when not specified." << std::endl;
             return 1;
         }
 
@@ -176,10 +208,29 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Optional: CAN interfaces
+        // Optional: CAN interfaces (auto-resolved from USB serial if not given)
         if (argc >= 6) {
             leader_can_interface = argv[4];
             follower_can_interface = argv[5];
+        } else {
+            openarm::print_interface_map();
+
+            std::string side = (arm_side == "left_arm") ? "left" : "right";
+            leader_can_interface = openarm::resolve_arm_interface("leader_" + side);
+            follower_can_interface = openarm::resolve_arm_interface("follower_" + side);
+
+            if (leader_can_interface.empty()) {
+                std::cerr << "[ERROR] Could not find CAN adapter for leader_"
+                          << side << " by USB serial!" << std::endl;
+                return 1;
+            }
+            if (follower_can_interface.empty()) {
+                std::cerr << "[ERROR] Could not find CAN adapter for follower_"
+                          << side << " by USB serial!" << std::endl;
+                return 1;
+            }
+            std::cout << "Auto-resolved leader  -> " << leader_can_interface << std::endl;
+            std::cout << "Auto-resolved follower -> " << follower_can_interface << std::endl;
         }
 
         // URDF file existence check

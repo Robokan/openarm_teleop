@@ -201,11 +201,14 @@ bool Control::bilateral_step() {
             motor_gripper_states[i].velocity, motor_gripper_states[i].effort});
     }
 
+    // send command to arm
     openarm_->get_arm().mit_control_all(arm_cmds);
+    // send command to gripper
     openarm_->get_gripper().mit_control_all(gripper_cmds);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    openarm_->recv_all(10000);
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+
+    openarm_->recv_all(220);
 
     return true;
 }
@@ -266,12 +269,12 @@ bool Control::unilateral_step() {
         for (size_t i = 0; i < joint_gripper_velocities.size(); ++i)
             ComputeFriction(joint_gripper_velocities.data(), friction.data(), arm_dof + i);
 
-        // arm joint state -- torque-only gravity compensation
+        // arm joint state
         std::vector<JointState> joint_arm_state_torque(arm_dof);
         for (size_t i = 0; i < arm_dof; ++i) {
             joint_arm_state_torque[i].position = joint_arm_positions[i];
             joint_arm_state_torque[i].velocity = joint_arm_velocities[i];
-            joint_arm_state_torque[i].effort = gravity[i];
+            joint_arm_state_torque[i].effort = gravity[i] + friction[i] * 0.3 + coriolis[i] * 0.1;
         }
 
         // gripper joint state
@@ -279,7 +282,7 @@ bool Control::unilateral_step() {
         for (size_t i = 0; i < gripper_dof; ++i) {
             joint_gripper_state_torque[i].position = joint_gripper_positions[i];
             joint_gripper_state_torque[i].velocity = joint_gripper_velocities[i];
-            joint_gripper_state_torque[i].effort = 0.0;
+            joint_gripper_state_torque[i].effort = friction[arm_dof + i] * 0.3;
         }
 
         std::vector<MotorState> motor_arm_states =
@@ -287,6 +290,7 @@ bool Control::unilateral_step() {
         std::vector<MotorState> motor_gripper_states =
             openarmgripperjointconverter_->joint_to_motor(joint_gripper_state_torque);
 
+        // arm command mit param
         std::vector<openarm::damiao_motor::MITParam> arm_cmds;
         arm_cmds.reserve(arm_dof);
         for (size_t i = 0; i < arm_dof; ++i) {
@@ -294,6 +298,7 @@ bool Control::unilateral_step() {
                 openarm::damiao_motor::MITParam{0.0, 0.0, 0.0, 0.0, motor_arm_states[i].effort});
         }
 
+        // gripper command mit param
         std::vector<openarm::damiao_motor::MITParam> gripper_cmds;
         gripper_cmds.reserve(gripper_dof);
         for (size_t i = 0; i < gripper_dof; ++i) {
@@ -304,8 +309,14 @@ bool Control::unilateral_step() {
         openarm_->get_arm().mit_control_all(arm_cmds);
         openarm_->get_gripper().mit_control_all(gripper_cmds);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        openarm_->recv_all(10000);
+        // Original upstream uses recv_all(200) with no sleep, but on CANable 2.0
+        // adapters (gs_usb) at 1Mbit, 8 motors need ~2ms to all respond on the
+        // CAN bus. Without enough wait time, only motor J1 (lowest CAN ID, wins
+        // arbitration) gets read. bilateral_step's recv_all(220) works there
+        // because the heavier computation makes each tick ~10ms, so previous
+        // responses accumulate in the kernel buffer.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        openarm_->recv_all(5000);
 
         return true;
 
@@ -317,7 +328,6 @@ bool Control::unilateral_step() {
         std::vector<JointState> joint_hand_states_ref =
             robot_state_->hand_state().get_all_references();
 
-        // Joint → Motor
         std::vector<MotorState> arm_motor_refs =
             openarmjointconverter_->joint_to_motor(joint_arm_states_ref);
         std::vector<MotorState> hand_motor_refs =
@@ -341,8 +351,9 @@ bool Control::unilateral_step() {
         openarm_->get_arm().mit_control_all(arm_cmds);
         openarm_->get_gripper().mit_control_all(hand_cmds);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        openarm_->recv_all(10000);
+        // Same CAN bus timing fix as leader path above
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        openarm_->recv_all(5000);
 
         return true;
     }
@@ -371,13 +382,6 @@ bool Control::AdjustPosition(void) {
     int nstep = 220;
     double alpha;
 
-    openarm_->refresh_all();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    openarm_->recv_all(10000);
-    openarm_->refresh_all();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    openarm_->recv_all(10000);
-
     std::vector<MotorState> arm_motor_states;
     for (const auto& motor : openarm_->get_arm().get_motors()) {
         arm_motor_states.push_back({motor.get_position(), motor.get_velocity(), 0.0});
@@ -386,23 +390,6 @@ bool Control::AdjustPosition(void) {
     std::vector<MotorState> gripper_motor_states;
     for (const auto& motor : openarm_->get_gripper().get_motors()) {
         gripper_motor_states.push_back({motor.get_position(), motor.get_velocity(), 0.0});
-    }
-
-    std::cout << "[AdjustPosition] Current motor positions (arm):";
-    for (const auto& s : arm_motor_states) std::cout << " " << s.position;
-    std::cout << std::endl;
-    std::cout << "[AdjustPosition] Current motor positions (gripper):";
-    for (const auto& s : gripper_motor_states) std::cout << " " << s.position;
-    std::cout << std::endl;
-
-    bool all_zero = true;
-    for (const auto& s : arm_motor_states) {
-        if (std::abs(s.position) > 1e-6) { all_zero = false; break; }
-    }
-    if (all_zero) {
-        std::cerr << "[AdjustPosition] WARNING: All arm motor positions are 0! "
-                  << "State read may have failed. Skipping for safety." << std::endl;
-        return false;
     }
 
     std::vector<JointState> joint_arm_now =
@@ -424,15 +411,14 @@ bool Control::AdjustPosition(void) {
         joint_hand_goal[i].effort = 0.0;
     }
 
-    const std::vector<double> kp_arm_max = {50.0, 50.0, 50.0, 50.0, 10.0, 10.0, 10.0};
+    std::vector<double> kp_arm_temp = {50, 50.0, 50.0, 50.0, 10.0, 10.0, 10.0};
     std::vector<double> kd_arm_temp = {1.2, 1.2, 1.2, 1.2, 0.3, 0.2, 0.3};
 
-    const double kp_hand_max = 10.0;
+    std::vector<double> kp_hand_temp = {10.0};
     std::vector<double> kd_hand_temp = {0.5};
 
     for (int step = 0; step < nstep; ++step) {
         alpha = static_cast<double>(step + 1) / nstep;
-        double kp_ramp = std::min(1.0, static_cast<double>(step + 1) / 50.0);
 
         std::vector<JointState> joint_arm_interp(NMOTORS - 1);
         for (size_t i = 0; i < NMOTORS - 1; ++i) {
@@ -456,17 +442,17 @@ bool Control::AdjustPosition(void) {
         std::vector<openarm::damiao_motor::MITParam> arm_cmds;
         arm_cmds.reserve(arm_motor_refs.size());
         for (size_t i = 0; i < arm_motor_refs.size(); ++i) {
-            arm_cmds.emplace_back(openarm::damiao_motor::MITParam{
-                kp_arm_max[i] * kp_ramp, kd_arm_temp[i],
-                arm_motor_refs[i].position, arm_motor_refs[i].velocity, 0.0});
+            arm_cmds.emplace_back(openarm::damiao_motor::MITParam{kp_arm_temp[i], kd_arm_temp[i],
+                                                                  arm_motor_refs[i].position,
+                                                                  arm_motor_refs[i].velocity, 0.0});
         }
 
         std::vector<openarm::damiao_motor::MITParam> hand_cmds;
         hand_cmds.reserve(hand_motor_refs.size());
         for (size_t i = 0; i < hand_motor_refs.size(); ++i) {
             hand_cmds.emplace_back(openarm::damiao_motor::MITParam{
-                kp_hand_max * kp_ramp, kd_hand_temp[i],
-                hand_motor_refs[i].position, hand_motor_refs[i].velocity, 0.0});
+                kp_hand_temp[i], kd_hand_temp[i], hand_motor_refs[i].position,
+                hand_motor_refs[i].velocity, 0.0});
         }
 
         openarm_->get_arm().mit_control_all(arm_cmds);
@@ -474,7 +460,7 @@ bool Control::AdjustPosition(void) {
 
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-        openarm_->recv_all(10000);
+        openarm_->recv_all();
     }
 
     std::vector<MotorState> arm_motor_states_final;
