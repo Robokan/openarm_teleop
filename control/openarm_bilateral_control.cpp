@@ -153,11 +153,16 @@ protected:
             std::cout << std::endl;
         }
 
-        // set referense
+        constexpr double gripper_scale = 2.58;
+
+        // Leader ← follower: scale follower gripper down to leader's range
         leader_state_->arm_state().set_all_references(follower_arm_resp);
+        for (auto& s : follower_hand_resp) s.position /= gripper_scale;
         leader_state_->hand_state().set_all_references(follower_hand_resp);
 
+        // Follower ← leader: scale leader gripper up to follower's range
         follower_state_->arm_state().set_all_references(leader_arm_resp);
+        for (auto& s : leader_hand_resp) s.position *= gripper_scale;
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
         auto elapsed_us =
@@ -323,10 +328,28 @@ int main(int argc, char **argv) {
         control_follower->SetParameter(follower_kp, follower_kd, follower_Fc, follower_k,
                                        follower_Fv, follower_Fo);
 
-        // set home postion
-        std::thread thread_l(&Control::AdjustPosition, control_leader);
+        // Read leader's current position so follower can smoothly move to it
+        leader_openarm->refresh_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        leader_openarm->recv_all(10000);
+
+        OpenArmJointConverter arm_conv(leader_arm_motor_num);
+        OpenArmJGripperJointConverter grip_conv(leader_hand_motor_num);
+
+        std::vector<MotorState> leader_arm_ms;
+        for (const auto& m : leader_openarm->get_arm().get_motors())
+            leader_arm_ms.push_back({m.get_position(), m.get_velocity(), 0.0});
+        std::vector<MotorState> leader_grip_ms;
+        for (const auto& m : leader_openarm->get_gripper().get_motors())
+            leader_grip_ms.push_back({m.get_position(), m.get_velocity(), 0.0});
+
+        auto leader_arm_joints = arm_conv.motor_to_joint(leader_arm_ms);
+        auto leader_grip_joints = grip_conv.motor_to_joint(leader_grip_ms);
+
+        // Set follower's target to leader's current position, then smoothly move
+        follower_state->arm_state().set_all_references(leader_arm_joints);
+        follower_state->hand_state().set_all_references(leader_grip_joints);
         std::thread thread_f(&Control::AdjustPosition, control_follower);
-        thread_l.join();
         thread_f.join();
 
         // Start control process

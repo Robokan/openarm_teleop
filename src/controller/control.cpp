@@ -201,14 +201,13 @@ bool Control::bilateral_step() {
             motor_gripper_states[i].velocity, motor_gripper_states[i].effort});
     }
 
-    // send command to arm
     openarm_->get_arm().mit_control_all(arm_cmds);
-    // send command to gripper
     openarm_->get_gripper().mit_control_all(gripper_cmds);
 
-    std::this_thread::sleep_for(std::chrono::microseconds(200));
-
-    openarm_->recv_all(220);
+    // Same CAN bus timing as unilateral_step — CANable 2.0 needs ~2ms for
+    // all 8 motors to respond on the bus
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    openarm_->recv_all(5000);
 
     return true;
 }
