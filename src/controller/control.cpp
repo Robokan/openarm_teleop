@@ -269,12 +269,15 @@ bool Control::unilateral_step() {
         for (size_t i = 0; i < joint_gripper_velocities.size(); ++i)
             ComputeFriction(joint_gripper_velocities.data(), friction.data(), arm_dof + i);
 
-        // arm joint state
+        // Per-joint gravity scale — URDF overestimates arm mass/inertia,
+        // causing upward drift. J7 (last wrist) is the most overestimated.
+        const double grav_scale[] = {0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.5};
+
         std::vector<JointState> joint_arm_state_torque(arm_dof);
         for (size_t i = 0; i < arm_dof; ++i) {
             joint_arm_state_torque[i].position = joint_arm_positions[i];
             joint_arm_state_torque[i].velocity = joint_arm_velocities[i];
-            joint_arm_state_torque[i].effort = gravity[i] + friction[i] * 0.3 + coriolis[i] * 0.1;
+            joint_arm_state_torque[i].effort = gravity[i] * grav_scale[i] + friction[i] * 0.3 + coriolis[i] * 0.1;
         }
 
         // gripper joint state
@@ -290,7 +293,6 @@ bool Control::unilateral_step() {
         std::vector<MotorState> motor_gripper_states =
             openarmgripperjointconverter_->joint_to_motor(joint_gripper_state_torque);
 
-        // arm command mit param
         std::vector<openarm::damiao_motor::MITParam> arm_cmds;
         arm_cmds.reserve(arm_dof);
         for (size_t i = 0; i < arm_dof; ++i) {
