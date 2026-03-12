@@ -150,6 +150,7 @@ protected:
 
         auto leader_hand_resp = leader_state_->hand_state().get_all_responses();
         auto follower_hand_resp = follower_state_->hand_state().get_all_responses();
+        auto follower_hand_resp_raw = follower_hand_resp;
 
         if (tick < 5) {
             std::cout << "[Admin t=" << tick << "] leader_resp:";
@@ -178,6 +179,16 @@ protected:
         // Follower ← leader: offset so closed=0, then scale up to follower range
         follower_state_->arm_state().set_all_references(leader_arm_resp);
         for (auto& s : leader_hand_resp) s.position = (s.position + gripper_offset) * gripper_scale;
+
+        // Ensure minimum closing force: if follower ref is more closed (closer to 0)
+        // than actual, keep at least min_grip_error of position error
+        constexpr double min_grip_error = 0.3;
+        for (size_t i = 0; i < leader_hand_resp.size(); ++i) {
+            double actual = follower_hand_resp_raw[i].position;
+            if (leader_hand_resp[i].position > actual &&
+                leader_hand_resp[i].position - actual < min_grip_error)
+                leader_hand_resp[i].position = actual + min_grip_error;
+        }
         follower_state_->hand_state().set_all_references(leader_hand_resp);
 
         auto elapsed_us =
