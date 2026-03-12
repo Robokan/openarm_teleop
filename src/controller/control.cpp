@@ -169,9 +169,10 @@ bool Control::bilateral_step() {
         ComputeFriction(joint_gripper_velocities.data(), friction.data(),
                         joint_arm_velocities.size() + i);
 
-    // set gravity and friciton comp joint torque value
+    // Per-joint gravity scale — tuned for bilateral (wrist needs more than unilateral's 0.5)
+    const double grav_scale[] = {0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.75};
     for (size_t i = 0; i < arm_dof; i++) {
-        joint_arm_states_ref[i].effort = gravity[i] + friction[i];
+        joint_arm_states_ref[i].effort = gravity[i] * grav_scale[i] + friction[i];
     }
 
     for (size_t i = 0; i < gripper_dof; i++) {

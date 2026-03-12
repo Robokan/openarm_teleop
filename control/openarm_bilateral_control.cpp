@@ -346,7 +346,10 @@ int main(int argc, char **argv) {
         auto leader_arm_joints = arm_conv.motor_to_joint(leader_arm_ms);
         auto leader_grip_joints = grip_conv.motor_to_joint(leader_grip_ms);
 
-        // Set follower's target to leader's current position, then smoothly move
+        // Scale leader gripper to follower range before setting startup target
+        constexpr double gripper_scale_startup = 2.58;
+        for (auto& s : leader_grip_joints) s.position *= gripper_scale_startup;
+
         follower_state->arm_state().set_all_references(leader_arm_joints);
         follower_state->hand_state().set_all_references(leader_grip_joints);
         std::thread thread_f(&Control::AdjustPosition, control_follower);
