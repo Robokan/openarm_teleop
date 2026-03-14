@@ -15,6 +15,7 @@
 #include <atomic>
 #include <can_interface_resolver.hpp>
 #include <chrono>
+#include <cstdio>
 #include <controller/control.hpp>
 #include <controller/dynamics.hpp>
 #include <csignal>
@@ -127,17 +128,44 @@ class AdminThread : public PeriodicTimerThread {
 public:
     AdminThread(std::shared_ptr<RobotSystemState> leader_state,
                 std::shared_ptr<RobotSystemState> follower_state, Control *control_l,
-                Control *control_f, double hz = 500.0)
+                Control *control_f, double hz = 500.0,
+                const std::string &record_path = "")
         : PeriodicTimerThread(hz),
           leader_state_(leader_state),
           follower_state_(follower_state),
           control_l_(control_l),
-          control_f_(control_f) {}
+          control_f_(control_f),
+          record_file_(nullptr),
+          record_interval_(static_cast<int>(hz / 50.0)) {
+        if (!record_path.empty()) {
+            record_file_ = std::fopen(record_path.c_str(), "wb");
+            if (!record_file_)
+                std::cerr << "[AdminThread] Failed to open record file: "
+                          << record_path << std::endl;
+            else
+                std::cout << "[AdminThread] Recording joints to "
+                          << record_path << " at 50Hz" << std::endl;
+        }
+        if (record_interval_ < 1) record_interval_ = 1;
+    }
+
+    ~AdminThread() {
+        if (record_file_) {
+            std::fclose(record_file_);
+            record_file_ = nullptr;
+        }
+    }
 
 protected:
     void before_start() override { std::cout << "admin start thread " << std::endl; }
 
-    void after_stop() override { std::cout << "admin stop thread " << std::endl; }
+    void after_stop() override {
+        if (record_file_) {
+            std::fclose(record_file_);
+            record_file_ = nullptr;
+        }
+        std::cout << "admin stop thread " << std::endl;
+    }
 
     void on_timer() override {
         static auto prev_time = std::chrono::steady_clock::now();
@@ -158,6 +186,22 @@ protected:
             std::cout << "  follower_resp:";
             for (auto& s : follower_arm_resp) std::cout << " " << s.position;
             std::cout << std::endl;
+        }
+
+        // Write binary record at 50Hz
+        if (record_file_ && tick % record_interval_ == 0) {
+            auto epoch = std::chrono::system_clock::now().time_since_epoch();
+            double ts = std::chrono::duration<double>(epoch).count();
+            std::fwrite(&ts, sizeof(double), 1, record_file_);
+            for (auto& s : leader_arm_resp)
+                std::fwrite(&s.position, sizeof(double), 1, record_file_);
+            for (auto& s : leader_hand_resp)
+                std::fwrite(&s.position, sizeof(double), 1, record_file_);
+            for (auto& s : follower_arm_resp)
+                std::fwrite(&s.position, sizeof(double), 1, record_file_);
+            for (auto& s : follower_hand_resp)
+                std::fwrite(&s.position, sizeof(double), 1, record_file_);
+            std::fflush(record_file_);
         }
 
         // Gentle push away from full elbow extension (within 20 deg of straight)
@@ -203,6 +247,8 @@ private:
     std::shared_ptr<RobotSystemState> follower_state_;
     Control *control_l_;
     Control *control_f_;
+    FILE *record_file_;
+    int record_interval_;
 };
 
 int main(int argc, char **argv) {
@@ -214,24 +260,38 @@ int main(int argc, char **argv) {
         std::string follower_urdf_path;
         std::string leader_can_interface;
         std::string follower_can_interface;
+        std::string record_path;
 
-        if (argc < 3) {
+        // Parse --record flag from anywhere in argv
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "--record" && i + 1 < argc) {
+                record_path = argv[++i];
+            }
+        }
+
+        // Build positional args (everything that isn't --record / its value)
+        std::vector<std::string> pos_args;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "--record") { ++i; continue; }
+            pos_args.push_back(argv[i]);
+        }
+
+        if (pos_args.size() < 2) {
             std::cerr
                 << "Usage: " << argv[0]
                 << " <leader_urdf_path> <follower_urdf_path> [arm_side] [leader_can] [follower_can]"
+                << " [--record <path>]"
                 << std::endl;
             std::cerr << "\nCAN interfaces are auto-resolved from USB serial numbers "
                          "when not specified." << std::endl;
             return 1;
         }
 
-        // Required: URDF paths
-        leader_urdf_path = argv[1];
-        follower_urdf_path = argv[2];
+        leader_urdf_path = pos_args[0];
+        follower_urdf_path = pos_args[1];
 
-        // Optional: arm_side
-        if (argc >= 4) {
-            arm_side = argv[3];
+        if (pos_args.size() >= 3) {
+            arm_side = pos_args[2];
             if (arm_side != "left_arm" && arm_side != "right_arm") {
                 std::cerr << "[ERROR] Invalid arm_side: " << arm_side
                           << ". Must be 'left_arm' or 'right_arm'." << std::endl;
@@ -239,10 +299,9 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Optional: CAN interfaces (auto-resolved from USB serial if not given)
-        if (argc >= 6) {
-            leader_can_interface = argv[4];
-            follower_can_interface = argv[5];
+        if (pos_args.size() >= 5) {
+            leader_can_interface = pos_args[3];
+            follower_can_interface = pos_args[4];
         } else {
             openarm::print_interface_map();
 
@@ -386,7 +445,7 @@ int main(int argc, char **argv) {
         LeaderArmThread leader_thread(leader_state, control_leader, FREQUENCY);
         FollowerArmThread follower_thread(follower_state, control_follower, FREQUENCY);
         AdminThread admin_thread(leader_state, follower_state, control_leader, control_follower,
-                                 FREQUENCY);
+                                 FREQUENCY, record_path);
 
         // thread start in control
         leader_thread.start_thread();
