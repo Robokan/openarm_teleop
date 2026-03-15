@@ -118,23 +118,36 @@ public:
     AdminThread(std::shared_ptr<RobotSystemState> leader_state,
                 std::shared_ptr<RobotSystemState> follower_state, Control *control_l,
                 Control *control_f, double hz = 500.0,
-                const std::string &playback_path = "")
+                const std::string &playback_path = "",
+                FILE *existing_playback_file = nullptr,
+                const std::string &state_output_path = "")
         : PeriodicTimerThread(hz),
           leader_state_(leader_state),
           follower_state_(follower_state),
           control_l_(control_l),
           control_f_(control_f),
-          playback_file_(nullptr),
+          playback_file_(existing_playback_file),
+          state_output_file_(nullptr),
           playback_interval_(static_cast<int>(hz / 50.0)),
           playback_done_(false) {
-        if (!playback_path.empty()) {
+        if (!playback_file_ && !playback_path.empty()) {
             playback_file_ = std::fopen(playback_path.c_str(), "rb");
             if (!playback_file_)
                 std::cerr << "[AdminThread] Failed to open playback file: "
                           << playback_path << std::endl;
+        }
+        if (playback_file_)
+            std::cout << "[AdminThread] Playback from "
+                      << (playback_path.empty() ? "(pre-opened)" : playback_path)
+                      << " at 50Hz" << std::endl;
+        if (!state_output_path.empty()) {
+            state_output_file_ = std::fopen(state_output_path.c_str(), "wb");
+            if (!state_output_file_)
+                std::cerr << "[AdminThread] Failed to open state output: "
+                          << state_output_path << std::endl;
             else
-                std::cout << "[AdminThread] Playback from "
-                          << playback_path << " at 50Hz" << std::endl;
+                std::cout << "[AdminThread] Writing follower state to "
+                          << state_output_path << " at 50Hz" << std::endl;
         }
         if (playback_interval_ < 1) playback_interval_ = 1;
     }
@@ -143,6 +156,10 @@ public:
         if (playback_file_) {
             std::fclose(playback_file_);
             playback_file_ = nullptr;
+        }
+        if (state_output_file_) {
+            std::fclose(state_output_file_);
+            state_output_file_ = nullptr;
         }
     }
 
@@ -153,6 +170,10 @@ protected:
         if (playback_file_) {
             std::fclose(playback_file_);
             playback_file_ = nullptr;
+        }
+        if (state_output_file_) {
+            std::fclose(state_output_file_);
+            state_output_file_ = nullptr;
         }
         std::cout << "admin stop thread " << std::endl;
     }
@@ -190,7 +211,29 @@ protected:
                     }
                 }
             }
-        } else if (!playback_file_) {
+        }
+
+        // Write follower state output at 50Hz for external consumers
+        if (state_output_file_ && tick % playback_interval_ == 0) {
+            auto f_arm_resp = follower_state_->arm_state().get_all_responses();
+            auto f_hand_resp = follower_state_->hand_state().get_all_responses();
+            auto epoch = std::chrono::system_clock::now().time_since_epoch();
+            double ts = std::chrono::duration<double>(epoch).count();
+            double zero = 0.0;
+            std::fwrite(&ts, sizeof(double), 1, state_output_file_);
+            // Leader positions: zeros (no leader in playback mode)
+            for (size_t i = 0; i < 7; ++i)
+                std::fwrite(&zero, sizeof(double), 1, state_output_file_);
+            std::fwrite(&zero, sizeof(double), 1, state_output_file_);
+            // Follower arm + gripper responses
+            for (auto& s : f_arm_resp)
+                std::fwrite(&s.position, sizeof(double), 1, state_output_file_);
+            for (auto& s : f_hand_resp)
+                std::fwrite(&s.position, sizeof(double), 1, state_output_file_);
+            std::fflush(state_output_file_);
+        }
+
+        if (!playback_file_) {
             // Normal unilateral mode: follower mirrors leader
             auto leader_arm_resp = leader_state_->arm_state().get_all_responses();
             auto follower_arm_resp = follower_state_->arm_state().get_all_responses();
@@ -227,6 +270,7 @@ private:
     Control *control_l_;
     Control *control_f_;
     FILE *playback_file_;
+    FILE *state_output_file_;
     int playback_interval_;
     bool playback_done_;
 };
@@ -241,18 +285,22 @@ int main(int argc, char **argv) {
         std::string leader_can_interface;
         std::string follower_can_interface;
         std::string playback_path;
+        std::string state_output_path;
 
-        // Parse --playback flag from anywhere in argv
+        // Parse --playback and --state-output flags from anywhere in argv
         for (int i = 1; i < argc; ++i) {
             if (std::string(argv[i]) == "--playback" && i + 1 < argc) {
                 playback_path = argv[++i];
+            } else if (std::string(argv[i]) == "--state-output" && i + 1 < argc) {
+                state_output_path = argv[++i];
             }
         }
 
-        // Build positional args (everything that isn't --playback / its value)
+        // Build positional args (everything that isn't a named flag / its value)
         std::vector<std::string> pos_args;
         for (int i = 1; i < argc; ++i) {
-            if (std::string(argv[i]) == "--playback") { ++i; continue; }
+            if (std::string(argv[i]) == "--playback" ||
+                std::string(argv[i]) == "--state-output") { ++i; continue; }
             pos_args.push_back(argv[i]);
         }
 
@@ -260,7 +308,7 @@ int main(int argc, char **argv) {
             std::cerr
                 << "Usage: " << argv[0]
                 << " <leader_urdf_path> <follower_urdf_path> [arm_side] [leader_can] [follower_can]"
-                << " [--playback <path>]"
+                << " [--playback <path>] [--state-output <path>]"
                 << std::endl;
             return 1;
         }
@@ -394,13 +442,15 @@ int main(int argc, char **argv) {
         control_follower->SetParameter(follower_kp, follower_kd, follower_Fc, follower_k,
                                        follower_Fv, follower_Fo);
 
+        FILE *playback_file_handle = nullptr;
         if (is_playback) {
-            // Playback: read first frame and smoothly move follower to start
-            FILE *pf = std::fopen(playback_path.c_str(), "rb");
-            if (pf) {
+            // Playback: open FIFO once, read first frame for start position,
+            // then pass the open handle to AdminThread (FIFOs break if closed
+            // and re-opened — the writer gets BrokenPipeError).
+            playback_file_handle = std::fopen(playback_path.c_str(), "rb");
+            if (playback_file_handle) {
                 double buf[17];
-                size_t n = std::fread(buf, sizeof(double), 17, pf);
-                std::fclose(pf);
+                size_t n = std::fread(buf, sizeof(double), 17, playback_file_handle);
                 if (n == 17) {
                     std::vector<JointState> start_arm(7);
                     for (int i = 0; i < 7; ++i)
@@ -450,7 +500,8 @@ int main(int argc, char **argv) {
         std::unique_ptr<LeaderArmThread> leader_thread;
         FollowerArmThread follower_thread(follower_state, control_follower, FREQUENCY);
         AdminThread admin_thread(leader_state, follower_state, control_leader, control_follower,
-                                 FREQUENCY, playback_path);
+                                 FREQUENCY, playback_path, playback_file_handle,
+                                 state_output_path);
 
         if (!is_playback) {
             leader_thread = std::make_unique<LeaderArmThread>(
