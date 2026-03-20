@@ -16,6 +16,7 @@
 #include <can_interface_resolver.hpp>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <controller/control.hpp>
 #include <controller/dynamics.hpp>
 #include <csignal>
@@ -26,7 +27,10 @@
 #include <openarm_port/openarm_init.hpp>
 #include <periodic_timer_thread.hpp>
 #include <robot_state.hpp>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <yamlloader.hpp>
 
 std::atomic<bool> keep_running(true);
@@ -115,6 +119,9 @@ private:
 
 class AdminThread : public PeriodicTimerThread {
 public:
+    static constexpr double MAX_JOINT_DELTA = 0.5;
+    static constexpr double MAX_GRIP_DELTA = 1.0;
+
     AdminThread(std::shared_ptr<RobotSystemState> leader_state,
                 std::shared_ptr<RobotSystemState> follower_state, Control *control_l,
                 Control *control_f, double hz = 500.0,
@@ -129,17 +136,25 @@ public:
           playback_file_(existing_playback_file),
           state_output_file_(nullptr),
           playback_interval_(static_cast<int>(hz / 50.0)),
-          playback_done_(false) {
+          playback_done_(false),
+          is_fifo_(false),
+          prev_refs_initialized_(false),
+          safety_tripped_(false) {
         if (!playback_file_ && !playback_path.empty()) {
             playback_file_ = std::fopen(playback_path.c_str(), "rb");
             if (!playback_file_)
                 std::cerr << "[AdminThread] Failed to open playback file: "
                           << playback_path << std::endl;
         }
-        if (playback_file_)
+        if (playback_file_) {
+            struct stat st;
+            is_fifo_ = (fstat(fileno(playback_file_), &st) == 0 &&
+                         S_ISFIFO(st.st_mode));
             std::cout << "[AdminThread] Playback from "
                       << (playback_path.empty() ? "(pre-opened)" : playback_path)
+                      << (is_fifo_ ? " (FIFO)" : " (file)")
                       << " at 50Hz" << std::endl;
+        }
         if (!state_output_path.empty()) {
             state_output_file_ = std::fopen(state_output_path.c_str(), "wb");
             if (!state_output_file_)
@@ -184,31 +199,58 @@ protected:
         auto now = std::chrono::steady_clock::now();
 
         if (playback_file_ && !playback_done_) {
-            // Playback mode: read recorded positions at 50Hz
             if (tick % playback_interval_ == 0) {
-                double buf[17];
-                size_t n = std::fread(buf, sizeof(double), 17, playback_file_);
-                if (n < 17) {
-                    std::cout << "[AdminThread] Playback complete." << std::endl;
-                    playback_done_ = true;
-                    keep_running = false;
+                constexpr int RECORD_DOUBLES = 17;
+                constexpr int RECORD_BYTES = RECORD_DOUBLES * sizeof(double);
+                double buf[RECORD_DOUBLES];
+                bool got_frame = false;
+
+                if (is_fifo_) {
+                    int fd = fileno(playback_file_);
+                    int avail = 0;
+                    ioctl(fd, FIONREAD, &avail);
+                    int num_records = avail / RECORD_BYTES;
+                    double skip[RECORD_DOUBLES];
+                    for (int i = 0; i < num_records - 1; ++i)
+                        ::read(fd, skip, RECORD_BYTES);
+                    if (num_records > 0) {
+                        got_frame = (::read(fd, buf, RECORD_BYTES) == RECORD_BYTES);
+                        if (num_records > 2)
+                            std::cout << "[Playback] drained " << num_records - 1
+                                      << " stale records" << std::endl;
+                    }
                 } else {
-                    // buf[9..15] = follower arm (7 joints)
-                    // buf[16]    = follower gripper (1 joint)
+                    got_frame = (std::fread(buf, sizeof(double),
+                                           RECORD_DOUBLES, playback_file_)
+                                 == RECORD_DOUBLES);
+                }
+
+                if (got_frame) {
                     std::vector<JointState> arm_refs(7);
                     for (int i = 0; i < 7; ++i)
                         arm_refs[i].position = buf[9 + i];
-                    follower_state_->arm_state().set_all_references(arm_refs);
 
                     std::vector<JointState> grip_refs(1);
                     grip_refs[0].position = buf[16];
+
+                    if (!check_safety(arm_refs, grip_refs))
+                        return;
+
+                    follower_state_->arm_state().set_all_references(arm_refs);
                     follower_state_->hand_state().set_all_references(grip_refs);
 
-                    if (tick < 5 || tick % 500 == 0) {
+                    if (tick < 5 * playback_interval_ ||
+                        tick % (500 * playback_interval_) == 0) {
                         std::cout << "[Playback t=" << tick << "] ref:";
-                        for (auto& s : arm_refs) std::cout << " " << s.position;
-                        std::cout << " grip: " << grip_refs[0].position << std::endl;
+                        for (auto& s : arm_refs)
+                            std::cout << " " << s.position;
+                        std::cout << " grip: " << grip_refs[0].position
+                                  << std::endl;
                     }
+                } else if (!is_fifo_) {
+                    std::cout << "[AdminThread] Playback complete." << std::endl;
+                    playback_done_ = true;
+                    keep_running = false;
                 }
             }
         }
@@ -243,12 +285,15 @@ protected:
             leader_state_->arm_state().set_all_references(follower_arm_resp);
             leader_state_->hand_state().set_all_references(follower_hand_resp);
 
-            follower_state_->arm_state().set_all_references(leader_arm_resp);
-
             constexpr double gripper_scale = 2.58;
             constexpr double gripper_offset = 0.06;
             for (auto& s : leader_hand_resp)
                 s.position = (s.position + gripper_offset) * gripper_scale;
+
+            if (!check_safety(leader_arm_resp, leader_hand_resp))
+                return;
+
+            follower_state_->arm_state().set_all_references(leader_arm_resp);
             follower_state_->hand_state().set_all_references(leader_hand_resp);
 
             if (tick > 0 && tick % 500 == 0) {
@@ -264,6 +309,47 @@ protected:
         tick++;
     }
 
+    bool check_safety(const std::vector<JointState> &new_refs,
+                      const std::vector<JointState> &grip_refs) {
+        if (!prev_refs_initialized_) {
+            prev_arm_refs_ = new_refs;
+            prev_grip_refs_ = grip_refs;
+            prev_refs_initialized_ = true;
+            return true;
+        }
+
+        for (size_t i = 0; i < std::min(new_refs.size(), prev_arm_refs_.size()); ++i) {
+            double delta = std::abs(new_refs[i].position - prev_arm_refs_[i].position);
+            if (delta > MAX_JOINT_DELTA) {
+                std::cerr << "\n[SAFETY] Joint " << (i + 1)
+                          << " ref jumped " << delta << " rad in one frame"
+                          << " (limit " << MAX_JOINT_DELTA << " rad)!"
+                          << " (new=" << new_refs[i].position
+                          << " prev=" << prev_arm_refs_[i].position << ")"
+                          << "\n[SAFETY] DISABLING ALL MOTORS — "
+                          << "check robot before restarting!" << std::endl;
+                safety_tripped_ = true;
+                keep_running = false;
+                return false;
+            }
+        }
+        for (size_t i = 0; i < std::min(grip_refs.size(), prev_grip_refs_.size()); ++i) {
+            double delta = std::abs(grip_refs[i].position - prev_grip_refs_[i].position);
+            if (delta > MAX_GRIP_DELTA) {
+                std::cerr << "\n[SAFETY] Gripper ref jumped " << delta
+                          << " rad in one frame (limit " << MAX_GRIP_DELTA << " rad)!"
+                          << "\n[SAFETY] DISABLING ALL MOTORS — "
+                          << "check robot before restarting!" << std::endl;
+                safety_tripped_ = true;
+                keep_running = false;
+                return false;
+            }
+        }
+        prev_arm_refs_ = new_refs;
+        prev_grip_refs_ = grip_refs;
+        return true;
+    }
+
 private:
     std::shared_ptr<RobotSystemState> leader_state_;
     std::shared_ptr<RobotSystemState> follower_state_;
@@ -273,6 +359,12 @@ private:
     FILE *state_output_file_;
     int playback_interval_;
     bool playback_done_;
+    bool is_fifo_;
+    std::vector<JointState> prev_arm_refs_;
+    std::vector<JointState> prev_grip_refs_;
+    bool prev_refs_initialized_;
+public:
+    bool safety_tripped_;
 };
 
 int main(int argc, char **argv) {
@@ -444,9 +536,44 @@ int main(int argc, char **argv) {
 
         FILE *playback_file_handle = nullptr;
         if (is_playback) {
-            // Playback: open FIFO once, read first frame for start position,
-            // then pass the open handle to AdminThread (FIFOs break if closed
-            // and re-opened — the writer gets BrokenPipeError).
+            // Read current follower motor positions and write to temp file
+            // so Python can initialise MuJoCo to match.
+            follower_openarm->refresh_all();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            follower_openarm->recv_all(10000);
+
+            OpenArmJointConverter f_arm_conv(follower_arm_motor_num);
+            OpenArmJGripperJointConverter f_grip_conv(follower_hand_motor_num);
+
+            std::vector<MotorState> f_arm_ms;
+            for (const auto& m : follower_openarm->get_arm().get_motors())
+                f_arm_ms.push_back({m.get_position(), m.get_velocity(), 0.0});
+            std::vector<MotorState> f_grip_ms;
+            for (const auto& m : follower_openarm->get_gripper().get_motors())
+                f_grip_ms.push_back({m.get_position(), m.get_velocity(), 0.0});
+
+            auto f_arm_joints = f_arm_conv.motor_to_joint(f_arm_ms);
+            auto f_grip_joints = f_grip_conv.motor_to_joint(f_grip_ms);
+
+            std::string init_path = "/tmp/sparkjax_vr/init_" + arm_side + ".bin";
+            FILE *initf = std::fopen(init_path.c_str(), "wb");
+            if (initf) {
+                for (auto& s : f_arm_joints)
+                    std::fwrite(&s.position, sizeof(double), 1, initf);
+                for (auto& s : f_grip_joints)
+                    std::fwrite(&s.position, sizeof(double), 1, initf);
+                std::fclose(initf);
+                std::cout << "[Playback] Initial positions written to "
+                          << init_path << std::endl;
+                std::cout << "[Playback] Arm:";
+                for (auto& s : f_arm_joints)
+                    std::cout << " " << s.position;
+                std::cout << " Grip:";
+                for (auto& s : f_grip_joints)
+                    std::cout << " " << s.position;
+                std::cout << std::endl;
+            }
+
             playback_file_handle = std::fopen(playback_path.c_str(), "rb");
             if (playback_file_handle) {
                 double buf[17];
@@ -521,6 +648,12 @@ int main(int argc, char **argv) {
 
         if (leader_openarm) leader_openarm->disable_all();
         follower_openarm->disable_all();
+
+        if (admin_thread.safety_tripped_) {
+            std::cerr << "[SAFETY] Motors disabled. Exiting with error."
+                      << std::endl;
+            return 2;
+        }
 
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
